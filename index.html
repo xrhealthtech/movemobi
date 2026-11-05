@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Stick Man ao Vivo</title>
+<style>
+  :root{--bg:#0e1214;--fg:#e8eef0;--muted:#8a979c;--bone:#4fd1c5;--joint:#ffffff;--angle:#ffd166;--panel:rgba(14,18,20,.78)}
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif;overflow:hidden}
+  #stage{position:fixed;inset:0;display:grid;place-items:center}
+  video,canvas{position:absolute;max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain}
+  video.mirror{transform:scaleX(-1)}
+  #bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;flex-wrap:wrap;justify-content:center;
+       padding:12px max(12px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:var(--panel)}
+  button{font:inherit;color:var(--fg);background:#1f2a2e;border:1px solid #33444a;border-radius:10px;padding:10px 14px}
+  button[aria-pressed="true"]{background:var(--bone);color:#062221;border-color:var(--bone)}
+  button:focus-visible{outline:2px solid var(--angle);outline-offset:2px}
+  #status{position:fixed;top:calc(10px + env(safe-area-inset-top));left:12px;right:12px;text-align:center;color:var(--muted);font-size:13px;pointer-events:none}
+  #start{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);padding:24px;text-align:center}
+  #start div{max-width:340px;display:grid;gap:14px}
+  #start h1{margin:0;font-size:22px}
+  #start p{margin:0;color:var(--muted)}
+  #go{background:var(--bone);color:#062221;border:0;font-weight:600;padding:14px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="canvas"></canvas>
+</div>
+<div id="status">Carregando modelo…</div>
+<div id="bar">
+  <button id="flip">Trocar câmera</button>
+  <button id="angles" aria-pressed="true">Ângulos</button>
+  <button id="model">Modelo: leve</button>
+</div>
+<div id="start"><div>
+  <h1>Stick Man ao Vivo</h1>
+  <p>Detecta 33 pontos do corpo pela câmera e desenha o esqueleto em tempo real. Tudo roda no próprio celular.</p>
+  <button id="go">Abrir câmera</button>
+  <p style="font-size:13px">Dica: corpo inteiro no quadro, boa luz e câmera perpendicular ao plano do movimento.</p>
+</div></div>
+
+<script type="module">
+import {PoseLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const MODELS = {
+  leve:  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+  completo: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task"
+};
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const status = document.getElementById("status");
+let facing = "environment", showAngles = true, modelName = "leve";
+let landmarker, vision, stream, lastTime = -1, fps = 0, lastFpsT = performance.now(), frames = 0;
+
+// Conexões do esqueleto (índices MediaPipe)
+const BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],
+  [23,25],[25,27],[27,29],[29,31],[27,31],[24,26],[26,28],[28,30],[30,32],[28,32],[0,11],[0,12]];
+// Ângulos: [proximal, vértice, distal, rótulo]
+const ANGLES = [[11,13,15,"Cot E"],[12,14,16,"Cot D"],[11,23,25,"Quad E"],[12,24,26,"Quad D"],
+  [23,25,27,"Joe E"],[24,26,28,"Joe D"],[13,11,23,"Omb E"],[14,12,24,"Omb D"]];
+
+async function loadModel(){
+  status.textContent = "Carregando modelo " + modelName + "…";
+  vision ??= await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  landmarker?.close();
+  const opts = d => ({baseOptions:{modelAssetPath:MODELS[modelName], delegate:d}, runningMode:"VIDEO", numPoses:1});
+  try { landmarker = await PoseLandmarker.createFromOptions(vision, opts("GPU")); }
+  catch { landmarker = await PoseLandmarker.createFromOptions(vision, opts("CPU")); }
+  status.textContent = "";
+}
+
+async function startCamera(){
+  stream?.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing, width:{ideal:1280}, height:{ideal:720}}, audio:false});
+  video.srcObject = stream;
+  video.classList.toggle("mirror", facing === "user");
+  await video.play();
+}
+
+function angle(a,b,c){
+  const v1=[a.x-b.x,a.y-b.y], v2=[c.x-b.x,c.y-b.y];
+  const cos=(v1[0]*v2[0]+v1[1]*v2[1])/(Math.hypot(...v1)*Math.hypot(...v2));
+  return Math.acos(Math.max(-1,Math.min(1,cos)))*180/Math.PI;
+}
+
+function draw(lm){
+  // Área real do vídeo dentro do canvas (object-fit: contain)
+  const cw = canvas.width = canvas.clientWidth * devicePixelRatio;
+  const ch = canvas.height = canvas.clientHeight * devicePixelRatio;
+  const s = Math.min(cw/video.videoWidth, ch/video.videoHeight);
+  const w = video.videoWidth*s, h = video.videoHeight*s, ox=(cw-w)/2, oy=(ch-h)/2;
+  const mirror = facing === "user";
+  // Proporção corrigida para o cálculo de ângulo (pixels reais)
+  const P = p => ({x: ox + (mirror ? 1-p.x : p.x)*w, y: oy + p.y*h, v: p.visibility ?? 1});
+  ctx.clearRect(0,0,cw,ch);
+  if(!lm) return;
+  const pts = lm.map(P);
+  const lw = Math.max(3, w/180);
+  ctx.lineCap = "round"; ctx.lineWidth = lw; ctx.strokeStyle = "#4fd1c5";
+  for(const [i,j] of BONES){
+    if(pts[i].v<.5||pts[j].v<.5) continue;
+    ctx.beginPath(); ctx.moveTo(pts[i].x,pts[i].y); ctx.lineTo(pts[j].x,pts[j].y); ctx.stroke();
+  }
+  ctx.fillStyle = "#fff";
+  for(const p of pts.slice(11)){ if(p.v<.5) continue; ctx.beginPath(); ctx.arc(p.x,p.y,lw*1.1,0,7); ctx.fill(); }
+  if(showAngles){
+    ctx.font = `600 ${Math.round(lw*4.5)}px system-ui`; ctx.textBaseline="middle";
+    for(const [a,b,c,label] of ANGLES){
+      if(pts[a].v<.6||pts[b].v<.6||pts[c].v<.6) continue;
+      const deg = Math.round(angle(pts[a],pts[b],pts[c]));
+      const txt = `${deg}°`, x = pts[b].x + lw*3, y = pts[b].y;
+      const tw = ctx.measureText(txt).width;
+      ctx.fillStyle="rgba(14,18,20,.75)"; ctx.fillRect(x-lw, y-lw*3, tw+lw*2, lw*6);
+      ctx.fillStyle="#ffd166"; ctx.fillText(txt, x, y);
+    }
+  }
+}
+
+function loop(){
+  if(landmarker && video.readyState >= 2 && video.currentTime !== lastTime){
+    lastTime = video.currentTime;
+    const r = landmarker.detectForVideo(video, performance.now());
+    draw(r.landmarks?.[0]);
+    frames++;
+    const now = performance.now();
+    if(now - lastFpsT > 1000){ fps = frames*1000/(now-lastFpsT); frames=0; lastFpsT=now;
+      status.textContent = r.landmarks?.length ? `${fps.toFixed(0)} fps` : `${fps.toFixed(0)} fps · nenhuma pessoa detectada`; }
+  }
+  requestAnimationFrame(loop);
+}
+
+document.getElementById("go").onclick = async () => {
+  try{
+    await startCamera();
+    document.getElementById("start").hidden = true;
+    await loadModel();
+    requestAnimationFrame(loop);
+  }catch(e){
+    status.textContent = "";
+    alert("Não consegui abrir a câmera. A página precisa estar em um endereço https e com a permissão de câmera liberada.\n\n" + e.message);
+  }
+};
+document.getElementById("flip").onclick = async () => { facing = facing==="user" ? "environment" : "user"; await startCamera(); };
+document.getElementById("angles").onclick = e => { showAngles=!showAngles; e.currentTarget.setAttribute("aria-pressed", showAngles); };
+document.getElementById("model").onclick = async e => {
+  modelName = modelName==="leve" ? "completo" : "leve";
+  e.currentTarget.textContent = "Modelo: " + modelName;
+  await loadModel();
+};
+</script>
+</body>
+</html>
