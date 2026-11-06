@@ -5,19 +5,29 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Stick Man ao Vivo</title>
 <style>
-  :root{--bg:#0e1214;--fg:#e8eef0;--muted:#8a979c;--bone:#4fd1c5;--joint:#ffffff;--angle:#ffd166;--panel:rgba(14,18,20,.78)}
+  :root{--bg:#0e1214;--fg:#e8eef0;--muted:#8a979c;--bone:#4fd1c5;--ref:#ff8fab;--angle:#ffd166;--panel:rgba(14,18,20,.78)}
   *{box-sizing:border-box}
   [hidden]{display:none!important}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif;overflow:hidden}
-  #stage{position:fixed;inset:0;display:grid;place-items:center}
-  video,canvas{position:absolute;max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain}
+  #stage{position:fixed;inset:0}
+  video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
   video.mirror{transform:scaleX(-1)}
+  #top{position:fixed;top:calc(8px + env(safe-area-inset-top));left:max(10px,env(safe-area-inset-left));right:max(10px,env(safe-area-inset-right));
+       display:flex;justify-content:space-between;align-items:flex-start;gap:8px;pointer-events:none}
+  #panel{background:var(--panel);border-radius:10px;padding:8px 10px;font-size:13px;font-variant-numeric:tabular-nums;min-width:0}
+  #panel:empty{display:none}
+  #panel h2{margin:0 0 4px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--bone)}
+  #panel div{display:flex;justify-content:space-between;gap:14px}
+  #panel span:last-child{color:var(--angle);font-weight:600}
+  #status{color:var(--muted);font-size:12px;background:var(--panel);border-radius:8px;padding:4px 8px}
+  #status:empty{display:none}
   #bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;flex-wrap:wrap;justify-content:center;
-       padding:12px max(12px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));background:var(--panel)}
-  button{font:inherit;color:var(--fg);background:#1f2a2e;border:1px solid #33444a;border-radius:10px;padding:10px 14px}
-  button[aria-pressed="true"]{background:var(--bone);color:#062221;border-color:var(--bone)}
+       padding:10px max(10px,env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));background:var(--panel)}
+  .seg{display:flex;border:1px solid #33444a;border-radius:10px;overflow:hidden}
+  .seg button{border:0;border-radius:0}
+  button{font:inherit;font-size:14px;color:var(--fg);background:#1f2a2e;border:1px solid #33444a;border-radius:10px;padding:9px 12px}
+  button[aria-pressed="true"]{background:var(--bone);color:#062221}
   button:focus-visible{outline:2px solid var(--angle);outline-offset:2px}
-  #status{position:fixed;top:calc(10px + env(safe-area-inset-top));left:12px;right:12px;text-align:center;color:var(--muted);font-size:13px;pointer-events:none}
   #start{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);padding:24px;text-align:center}
   #start div{max-width:340px;display:grid;gap:14px}
   #start h1{margin:0;font-size:22px}
@@ -30,114 +40,259 @@
   <video id="video" playsinline muted></video>
   <canvas id="canvas"></canvas>
 </div>
-<div id="status">Carregando modelo…</div>
+<div id="top"><div id="panel"></div><div id="status">Carregando…</div></div>
 <div id="bar">
-  <button id="flip">Trocar câmera</button>
+  <div class="seg" role="group" aria-label="Modo">
+    <button data-mode="3d" aria-pressed="true">3D</button>
+    <button data-mode="frontal" aria-pressed="false">Frontal</button>
+    <button data-mode="sagital" aria-pressed="false">Sagital</button>
+  </div>
+  <button id="side" hidden>Lado: auto</button>
+  <button id="flip">Câmera</button>
   <button id="angles" aria-pressed="true">Ângulos</button>
   <button id="model">Modelo: leve</button>
 </div>
 <div id="start"><div>
   <h1>Stick Man ao Vivo</h1>
-  <p>Detecta 33 pontos do corpo pela câmera e desenha o esqueleto em tempo real. Tudo roda no próprio celular.</p>
+  <p>Detecta os pontos do corpo pela câmera e desenha o esqueleto em tempo real, em 3D ou nos planos frontal e sagital. Tudo roda no próprio celular.</p>
   <button id="go">Abrir câmera</button>
-  <p style="font-size:13px">Dica: corpo inteiro no quadro, boa luz e câmera perpendicular ao plano do movimento.</p>
+  <p style="font-size:13px">Frontal: pessoa de frente para a câmera. Sagital: pessoa de perfil. Corpo inteiro no quadro, boa luz e câmera na altura do quadril.</p>
 </div></div>
 
 <script type="module">
 import {PoseLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const MODELS = {
-  leve:  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+  leve: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
   completo: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task"
 };
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-const status = document.getElementById("status");
-let facing = "environment", showAngles = true, modelName = "leve";
-let landmarker, vision, stream, lastTime = -1, fps = 0, lastFpsT = performance.now(), frames = 0;
+const C = {bone:"#4fd1c5", ref:"#ff8fab", angle:"#ffd166", joint:"#ffffff", faint:"rgba(255,255,255,.25)"};
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
+const status = $("status"), panel = $("panel");
 
-// Conexões do esqueleto (índices MediaPipe)
+let facing = "environment", showAngles = true, modelName = "leve", mode = "3d", sideSel = "auto";
+let landmarker, vision, stream, lastTime = -1, frames = 0, lastFpsT = performance.now(), lastPanelT = 0;
+let sm = null, smW = null;              // landmarks suavizados (imagem e mundo)
+let autoSide = "E", sideVotes = 0;      // lado automático no sagital, com histerese
+
+// ---------- geometria ----------
+const D = 180/Math.PI;
+const mid = (a,b) => ({x:(a.x+b.x)/2, y:(a.y+b.y)/2, z:((a.z??0)+(b.z??0))/2, v:Math.min(a.v,b.v)});
+function angle3(a,b,c){ // ângulo interno em b (2D ou 3D)
+  const u=[a.x-b.x,a.y-b.y,(a.z??0)-(b.z??0)], w=[c.x-b.x,c.y-b.y,(c.z??0)-(b.z??0)];
+  const dot=u[0]*w[0]+u[1]*w[1]+u[2]*w[2], n=Math.hypot(...u)*Math.hypot(...w);
+  return Math.acos(Math.max(-1,Math.min(1,dot/n)))*D;
+}
+const ok = (...ps) => ps.every(p => p && p.v >= .5);
+function smooth(prev, cur, a=.55){
+  if(!prev || prev.length !== cur.length) return cur.map(p=>({...p}));
+  return cur.map((p,i)=>({x:prev[i].x+(p.x-prev[i].x)*a, y:prev[i].y+(p.y-prev[i].y)*a, z:prev[i].z+(p.z-prev[i].z)*a, v:p.v}));
+}
+
+// ---------- desenho ----------
+function line(a,b,color,w,dash){ ctx.strokeStyle=color; ctx.lineWidth=w; ctx.setLineDash(dash||[]); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); ctx.setLineDash([]); }
+function dot(p,r,color=C.joint){ ctx.fillStyle=color; ctx.beginPath(); ctx.arc(p.x,p.y,r,0,7); ctx.fill(); }
+function tag(p,txt,lw,dx=1){
+  ctx.font=`600 ${Math.round(lw*4.2)}px system-ui`; ctx.textBaseline="middle";
+  const tw=ctx.measureText(txt).width, x = dx>0 ? p.x+lw*3 : p.x-lw*3-tw;
+  ctx.fillStyle="rgba(14,18,20,.75)"; ctx.fillRect(x-lw, p.y-lw*2.8, tw+lw*2, lw*5.6);
+  ctx.fillStyle=C.angle; ctx.fillText(txt, x, p.y);
+}
+const f = n => `${Math.round(n)}°`;
+
+// ---------- modo 3D ----------
 const BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],
   [23,25],[25,27],[27,29],[29,31],[27,31],[24,26],[26,28],[28,30],[30,32],[28,32],[0,11],[0,12]];
-// Ângulos: [proximal, vértice, distal, rótulo]
-const ANGLES = [[11,13,15,"Cot E"],[12,14,16,"Cot D"],[11,23,25,"Quad E"],[12,24,26,"Quad D"],
-  [23,25,27,"Joe E"],[24,26,28,"Joe D"],[13,11,23,"Omb E"],[14,12,24,"Omb D"]];
+const ANG3D = [[11,13,15,"Cotovelo E"],[12,14,16,"Cotovelo D"],[13,11,23,"Ombro E"],[14,12,24,"Ombro D"],
+  [11,23,25,"Quadril E"],[12,24,26,"Quadril D"],[23,25,27,"Joelho E"],[24,26,28,"Joelho D"]];
 
+function draw3D(p, world, lw){
+  for(const [i,j] of BONES) if(ok(p[i],p[j])) line(p[i],p[j],C.bone,lw);
+  for(const q of p.slice(11)) if(q.v>=.5) dot(q,lw*1.1);
+  const rows=[];
+  for(const [a,b,c,label] of ANG3D){
+    if(!ok(p[a],p[b],p[c]) || !world) continue;
+    const v = angle3(world[a],world[b],world[c]);   // ângulo 3D real (coordenadas do mundo, em metros)
+    rows.push([label,f(v)]);
+    if(showAngles) tag(p[b], f(v), lw);
+  }
+  return ["3D · ângulos internos", rows];
+}
+
+// ---------- modo frontal ----------
+function drawFrontal(p, lw){
+  const rows=[];
+  const LS=p[11], RS=p[12], LH=p[23], RH=p[24];
+  // segmentos principais
+  for(const [i,j] of [[11,13],[13,15],[12,14],[14,16],[23,25],[25,27],[24,26],[26,28],[27,29],[27,31],[28,30],[28,32]])
+    if(ok(p[i],p[j])) line(p[i],p[j],C.bone,lw);
+  for(const i of [11,12,13,14,15,16,23,24,25,26,27,28]) if(p[i].v>=.5) dot(p[i],lw*1.1);
+  if(!ok(LS,RS,LH,RH)) return ["Frontal", [["Posicione o tronco inteiro no quadro",""]]];
+
+  const leftDir = Math.sign(LS.x - RS.x) || 1;   // para que lado da imagem fica o lado E da pessoa
+  const mS = mid(LS,RS), mH = mid(LH,RH);
+  // fio de prumo a partir do ponto médio dos tornozelos (ou do quadril)
+  const base = ok(p[27],p[28]) ? mid(p[27],p[28]) : mH;
+  line({x:base.x,y:base.y}, {x:base.x,y:0}, C.ref, lw*.6, [lw*2,lw*2]);
+  // linhas de referência: cabeça, ombros, pelve, linha média do tronco
+  const ext=(a,b,k=.25)=>[{x:a.x+(a.x-b.x)*k,y:a.y+(a.y-b.y)*k},{x:b.x+(b.x-a.x)*k,y:b.y+(b.y-a.y)*k}];
+  line(...ext(LS,RS),C.ref,lw*.9); line(...ext(LH,RH),C.ref,lw*.9); line(mH,mS,C.ref,lw*.9);
+  dot(mS,lw*.9,C.ref); dot(mH,lw*.9,C.ref);
+
+  const tilt = (a,b) => Math.abs(Math.atan2(Math.abs(a.y-b.y), Math.abs(a.x-b.x))*D); // a=E, b=D
+  const lower = (a,b) => Math.abs(a.y-b.y) < 1 ? "" : (a.y > b.y ? " E↓" : " D↓");
+  if(ok(p[7],p[8])){ line(...ext(p[7],p[8],.15),C.ref,lw*.7); rows.push(["Cabeça (orelhas)", f(tilt(p[7],p[8]))+lower(p[7],p[8])]); }
+  rows.push(["Ombros", f(tilt(LS,RS))+lower(LS,RS)]);
+  rows.push(["Pelve", f(tilt(LH,RH))+lower(LH,RH)]);
+  const tr = Math.atan2(mS.x-mH.x, mH.y-mS.y)*D;
+  rows.push(["Tronco lateral", f(Math.abs(tr)) + (Math.abs(tr)<.5 ? "" : (Math.sign(mS.x-mH.x)===leftDir ? " p/ E" : " p/ D"))]);
+
+  // FPPA dos joelhos (ângulo de projeção no plano frontal)
+  for(const [h,k,a,lab] of [[23,25,27,"E"],[24,26,28,"D"]]){
+    if(!ok(p[h],p[k],p[a])) continue;
+    const dev = 180 - angle3({x:p[h].x,y:p[h].y},{x:p[k].x,y:p[k].y},{x:p[a].x,y:p[a].y});
+    const t = (p[k].y-p[h].y)/((p[a].y-p[h].y)||1), lx = p[h].x + t*(p[a].x-p[h].x);
+    const medial = Math.abs(p[k].x-mH.x) < Math.abs(lx-mH.x);
+    const txt = f(dev) + (dev<1 ? "" : medial ? " valgo" : " varo");
+    rows.push([`Joelho ${lab} (FPPA)`, txt]);
+    if(showAngles) tag(p[k], txt, lw, (p[k].x-mH.x)>0 ? 1 : -1);
+  }
+  return ["Frontal", rows];
+}
+
+// ---------- modo sagital ----------
+const SIDE = {
+  E:{ear:7, sh:11, el:13, wr:15, hip:23, kn:25, an:27, he:29, to:31},
+  D:{ear:8, sh:12, el:14, wr:16, hip:24, kn:26, an:28, he:30, to:32}
+};
+function pickSide(p){
+  if(sideSel !== "auto") return sideSel;
+  const z = s => [SIDE[s].sh,SIDE[s].hip,SIDE[s].kn,SIDE[s].an].reduce((t,i)=>t+p[i].z,0);
+  const vis = s => [SIDE[s].sh,SIDE[s].hip,SIDE[s].kn,SIDE[s].an].reduce((t,i)=>t+p[i].v,0);
+  const cand = Math.abs(vis("E")-vis("D")) > .6 ? (vis("E")>vis("D")?"E":"D") : (z("E")<z("D")?"E":"D");
+  if(cand !== autoSide){ if(++sideVotes > 10){ autoSide = cand; sideVotes = 0; } } else sideVotes = 0;
+  return autoSide;
+}
+function drawSagital(p, lw){
+  const s = pickSide(p), I = SIDE[s], q = k => p[I[k]];
+  const rows=[];
+  const chain = [["ear","sh"],["sh","hip"],["hip","kn"],["kn","an"],["an","he"],["he","to"],["an","to"],["sh","el"],["el","wr"]];
+  for(const [a,b] of chain) if(ok(q(a),q(b))) line(q(a),q(b), a==="ear" ? C.ref : C.bone, lw);
+  for(const k of Object.keys(I)) if(q(k).v>=.5) dot(q(k),lw*1.1);
+  if(!ok(q("sh"),q("hip"),q("kn"))) return [`Sagital · lado ${s}`, [["Posicione o corpo de perfil no quadro",""]]];
+
+  // direção anterior: pelo pé (calcanhar → ponta); sem pé, pelo nariz
+  let fwd = ok(q("he"),q("to")) ? Math.sign(q("to").x-q("he").x) : Math.sign(p[0].x-q("sh").x);
+  fwd ||= 1;
+  const fromUp   = v => Math.atan2(v.x*fwd, -v.y)*D;   // + = inclinado para a frente
+  const fromDown = v => Math.atan2(v.x*fwd,  v.y)*D;   // + = segmento indo para a frente
+  const vec = (a,b) => ({x:q(b).x-q(a).x, y:q(b).y-q(a).y});
+
+  // fio de prumo pelo tornozelo
+  if(q("an").v>=.5) line({x:q("an").x,y:q("an").y},{x:q("an").x,y:0},C.ref,lw*.6,[lw*2,lw*2]);
+
+  const trunk = fromUp(vec("hip","sh"));
+  rows.push(["Tronco (vs vertical)", f(trunk) + (Math.abs(trunk)<1 ? "" : trunk>0 ? " ant." : " post.")]);
+  if(ok(q("ear"),q("sh"))){
+    const head = fromUp(vec("sh","ear"));
+    rows.push(["Cabeça (orelha–ombro)", f(head) + (Math.abs(head)<1 ? "" : head>0 ? " ant." : " post.")]);
+  }
+  const thigh = fromDown(vec("hip","kn"));
+  const hip = thigh + trunk;
+  rows.push(["Quadril", f(Math.abs(hip)) + (hip>=0 ? " flex." : " ext.")]);
+  if(showAngles) tag(q("hip"), f(hip), lw, -fwd);
+  if(ok(q("an"))){
+    const shank = fromDown(vec("kn","an"));
+    const knee = thigh - shank;
+    rows.push(["Joelho", f(Math.abs(knee)) + (knee>=0 ? " flex." : " hiperext.")]);
+    if(showAngles) tag(q("kn"), f(knee), lw, fwd);
+    const tib = -shank;
+    rows.push(["Tíbia (vs vertical)", f(tib)]);
+    if(ok(q("he"),q("to"))){
+      const footUp = Math.atan2(-(q("to").y-q("he").y), (q("to").x-q("he").x)*fwd)*D;
+      const ank = tib + footUp;
+      rows.push(["Tornozelo", f(Math.abs(ank)) + (ank>=0 ? " dorsiflex." : " plantiflex.")]);
+      if(showAngles) tag(q("an"), f(ank), lw, -fwd);
+    }
+  }
+  if(ok(q("el"))){
+    const sho = fromDown(vec("sh","el")) + trunk;
+    rows.push(["Ombro", f(Math.abs(sho)) + (sho>=0 ? " flex." : " ext.")]);
+    if(ok(q("wr"))){
+      const elb = 180 - angle3(q("sh"),q("el"),q("wr"));
+      rows.push(["Cotovelo", f(elb) + " flex."]);
+    }
+  }
+  return [`Sagital · lado ${s}${sideSel==="auto" ? " (auto)" : ""}`, rows];
+}
+
+// ---------- ciclo principal ----------
+function render(lm, world){
+  const cw = canvas.width = canvas.clientWidth * devicePixelRatio;
+  const ch = canvas.height = canvas.clientHeight * devicePixelRatio;
+  ctx.clearRect(0,0,cw,ch);
+  if(!lm){ sm = smW = null; updatePanel(null); return; }
+  const s = Math.min(cw/video.videoWidth, ch/video.videoHeight);
+  const w = video.videoWidth*s, h = video.videoHeight*s, ox=(cw-w)/2, oy=(ch-h)/2;
+  const mirror = facing === "user";
+  sm = smooth(sm, lm.map(p=>({x:p.x, y:p.y, z:p.z, v:p.visibility ?? 1})));
+  if(world) smW = smooth(smW, world.map(p=>({x:p.x, y:p.y, z:p.z, v:p.visibility ?? 1})));
+  // pixels reais na tela (corrige proporção e espelhamento)
+  const p = sm.map(q => ({x: ox + (mirror ? 1-q.x : q.x)*w, y: oy + q.y*h, z: q.z, v: q.v}));
+  const lw = Math.max(3, w/180);
+  ctx.lineCap = "round";
+  const out = mode==="frontal" ? drawFrontal(p,lw) : mode==="sagital" ? drawSagital(p,lw) : draw3D(p,smW,lw);
+  updatePanel(out);
+}
+function updatePanel(out){
+  const now = performance.now();
+  if(now - lastPanelT < 120) return;
+  lastPanelT = now;
+  if(!out){ panel.replaceChildren(); return; }
+  const [title, rows] = out;
+  const h = document.createElement("h2"); h.textContent = title;
+  const items = rows.map(([k,v]) => { const d=document.createElement("div"), a=document.createElement("span"), b=document.createElement("span"); a.textContent=k; b.textContent=v; d.append(a,b); return d; });
+  panel.replaceChildren(h, ...items);
+}
+function loop(){
+  if(landmarker && video.readyState >= 2 && video.currentTime !== lastTime){
+    lastTime = video.currentTime;
+    const r = landmarker.detectForVideo(video, performance.now());
+    render(r.landmarks?.[0], r.worldLandmarks?.[0]);
+    frames++;
+    const now = performance.now();
+    if(now - lastFpsT > 1000){
+      const fps = frames*1000/(now-lastFpsT); frames=0; lastFpsT=now;
+      status.textContent = r.landmarks?.length ? `${fps.toFixed(0)} fps` : `${fps.toFixed(0)} fps · ninguém detectado`;
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+// ---------- câmera e modelo ----------
 async function loadModel(){
   status.textContent = "Carregando modelo " + modelName + "…";
   vision ??= await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-  landmarker?.close();
+  const old = landmarker; landmarker = null; old?.close();
   const opts = d => ({baseOptions:{modelAssetPath:MODELS[modelName], delegate:d}, runningMode:"VIDEO", numPoses:1});
   try { landmarker = await PoseLandmarker.createFromOptions(vision, opts("GPU")); }
   catch { landmarker = await PoseLandmarker.createFromOptions(vision, opts("CPU")); }
   status.textContent = "";
 }
-
 async function startCamera(){
   stream?.getTracks().forEach(t => t.stop());
   stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing, width:{ideal:1280}, height:{ideal:720}}, audio:false});
   video.srcObject = stream;
   video.classList.toggle("mirror", facing === "user");
   await video.play();
+  sm = smW = null;
 }
 
-function angle(a,b,c){
-  const v1=[a.x-b.x,a.y-b.y], v2=[c.x-b.x,c.y-b.y];
-  const cos=(v1[0]*v2[0]+v1[1]*v2[1])/(Math.hypot(...v1)*Math.hypot(...v2));
-  return Math.acos(Math.max(-1,Math.min(1,cos)))*180/Math.PI;
-}
-
-function draw(lm){
-  // Área real do vídeo dentro do canvas (object-fit: contain)
-  const cw = canvas.width = canvas.clientWidth * devicePixelRatio;
-  const ch = canvas.height = canvas.clientHeight * devicePixelRatio;
-  const s = Math.min(cw/video.videoWidth, ch/video.videoHeight);
-  const w = video.videoWidth*s, h = video.videoHeight*s, ox=(cw-w)/2, oy=(ch-h)/2;
-  const mirror = facing === "user";
-  // Proporção corrigida para o cálculo de ângulo (pixels reais)
-  const P = p => ({x: ox + (mirror ? 1-p.x : p.x)*w, y: oy + p.y*h, v: p.visibility ?? 1});
-  ctx.clearRect(0,0,cw,ch);
-  if(!lm) return;
-  const pts = lm.map(P);
-  const lw = Math.max(3, w/180);
-  ctx.lineCap = "round"; ctx.lineWidth = lw; ctx.strokeStyle = "#4fd1c5";
-  for(const [i,j] of BONES){
-    if(pts[i].v<.5||pts[j].v<.5) continue;
-    ctx.beginPath(); ctx.moveTo(pts[i].x,pts[i].y); ctx.lineTo(pts[j].x,pts[j].y); ctx.stroke();
-  }
-  ctx.fillStyle = "#fff";
-  for(const p of pts.slice(11)){ if(p.v<.5) continue; ctx.beginPath(); ctx.arc(p.x,p.y,lw*1.1,0,7); ctx.fill(); }
-  if(showAngles){
-    ctx.font = `600 ${Math.round(lw*4.5)}px system-ui`; ctx.textBaseline="middle";
-    for(const [a,b,c,label] of ANGLES){
-      if(pts[a].v<.6||pts[b].v<.6||pts[c].v<.6) continue;
-      const deg = Math.round(angle(pts[a],pts[b],pts[c]));
-      const txt = `${deg}°`, x = pts[b].x + lw*3, y = pts[b].y;
-      const tw = ctx.measureText(txt).width;
-      ctx.fillStyle="rgba(14,18,20,.75)"; ctx.fillRect(x-lw, y-lw*3, tw+lw*2, lw*6);
-      ctx.fillStyle="#ffd166"; ctx.fillText(txt, x, y);
-    }
-  }
-}
-
-function loop(){
-  if(landmarker && video.readyState >= 2 && video.currentTime !== lastTime){
-    lastTime = video.currentTime;
-    const r = landmarker.detectForVideo(video, performance.now());
-    draw(r.landmarks?.[0]);
-    frames++;
-    const now = performance.now();
-    if(now - lastFpsT > 1000){ fps = frames*1000/(now-lastFpsT); frames=0; lastFpsT=now;
-      status.textContent = r.landmarks?.length ? `${fps.toFixed(0)} fps` : `${fps.toFixed(0)} fps · nenhuma pessoa detectada`; }
-  }
-  requestAnimationFrame(loop);
-}
-
-document.getElementById("go").onclick = async () => {
+$("go").onclick = async () => {
   try{
     await startCamera();
-    document.getElementById("start").hidden = true;
+    $("start").hidden = true;
     await loadModel();
     requestAnimationFrame(loop);
   }catch(e){
@@ -145,9 +300,18 @@ document.getElementById("go").onclick = async () => {
     alert("Não consegui abrir a câmera. A página precisa estar em um endereço https e com a permissão de câmera liberada.\n\n" + e.message);
   }
 };
-document.getElementById("flip").onclick = async () => { facing = facing==="user" ? "environment" : "user"; await startCamera(); };
-document.getElementById("angles").onclick = e => { showAngles=!showAngles; e.currentTarget.setAttribute("aria-pressed", showAngles); };
-document.getElementById("model").onclick = async e => {
+document.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => {
+  mode = b.dataset.mode;
+  document.querySelectorAll("[data-mode]").forEach(x => x.setAttribute("aria-pressed", x===b));
+  $("side").hidden = mode !== "sagital";
+});
+$("side").onclick = e => {
+  sideSel = {auto:"E", E:"D", D:"auto"}[sideSel];
+  e.currentTarget.textContent = "Lado: " + sideSel;
+};
+$("flip").onclick = async () => { facing = facing==="user" ? "environment" : "user"; await startCamera(); };
+$("angles").onclick = e => { showAngles=!showAngles; e.currentTarget.setAttribute("aria-pressed", showAngles); };
+$("model").onclick = async e => {
   modelName = modelName==="leve" ? "completo" : "leve";
   e.currentTarget.textContent = "Modelo: " + modelName;
   await loadModel();
